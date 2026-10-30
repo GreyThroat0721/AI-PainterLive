@@ -1,0 +1,4 @@
+# 主播锁死的画风前缀：每行一段，服务启动时拼成一句。
+# 观众只能填主体，风格/画质/构图由这里控制（防跑偏、防注入、稳住出图速度）。
+masterpiece, best quality, very aesthetic, absurdres, anime illustration,
+clean lineart, soft cinematic lighting, detailed background, vibrant colors

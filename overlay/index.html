@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AI 绘画直播间 · 集成式画面</title>
+<style>
+  :root{--bg:#0a0c12;--fg:#e8eefc;--dim:#8ea0c0;--accent:#6ea8ff;--ok:#4ade80;--warn:#fbbf24;--err:#f87171}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;overflow:hidden;background:transparent;color:var(--fg);
+    font-family:"Microsoft YaHei UI","Segoe UI",system-ui,sans-serif}
+  #app{position:relative;width:100%;height:100%;padding:2vmin;display:flex;flex-direction:column;gap:1.6vmin;
+    background:radial-gradient(120% 120% at 20% 0%,#16203ae6 0%,#0a0c12f2 55%,#05070cf7 100%);border-radius:2vmin}
+  body.bare #app{background:transparent}
+  header{display:flex;align-items:center;gap:1.2vmin;flex:0 0 auto}
+  .brand{font-size:2vmin;font-weight:700;letter-spacing:.12em;color:var(--accent)}
+  .pill{font-size:1.5vmin;color:var(--dim);border:1px solid #ffffff18;border-radius:99px;
+    padding:.4vmin 1.2vmin;background:#ffffff08;white-space:nowrap}
+  .pill b{color:var(--fg)}
+  .grow{flex:1}
+  .dot{width:1vmin;height:1vmin;border-radius:50%;background:var(--dim);display:inline-block;margin-right:.5vmin;vertical-align:middle}
+  .dot.on{background:var(--ok);box-shadow:0 0 1.4vmin var(--ok)}
+  main{flex:1;display:flex;gap:1.6vmin;min-height:0}
+  #stage{position:relative;flex:1;border-radius:1.4vmin;overflow:hidden;border:1px solid #ffffff14;
+    background:linear-gradient(160deg,#161d2e,#0d1018);display:flex;align-items:center;justify-content:center}
+  #canvas{max-width:100%;max-height:100%;object-fit:contain;opacity:0;transform:scale(.985);transition:.45s}
+  #canvas.in{opacity:1;transform:scale(1)}
+  #placeholder{position:absolute;color:var(--dim);font-size:2.1vmin;text-align:center;line-height:1.9}
+  #placeholder b{color:var(--accent)}
+  #scan{position:absolute;inset:0;pointer-events:none;opacity:0;transition:.3s;
+    background:repeating-linear-gradient(180deg,#6ea8ff12 0 2px,transparent 2px 6px)}
+  body.busy #scan{opacity:1}
+  #status{position:absolute;left:0;right:0;bottom:0;padding:1.2vmin 1.6vmin;
+    background:linear-gradient(0deg,#05070ce8,transparent);display:flex;flex-direction:column;gap:.8vmin}
+  #who{font-size:1.8vmin}
+  #who b{color:var(--accent)}
+  #bar{height:.8vmin;border-radius:99px;background:#ffffff18;overflow:hidden}
+  #bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#6ea8ff,#a78bfa,#4ade80);transition:width .2s}
+  aside{width:24vmin;flex:0 0 auto;display:flex;flex-direction:column;gap:1.2vmin;min-height:0}
+  #host{flex:1;border-radius:1.4vmin;display:flex;align-items:flex-end;justify-content:center;
+    background:radial-gradient(80% 60% at 50% 100%,#6ea8ff22,transparent 70%);overflow:hidden}
+  /* Live2D 直接内嵌渲染页：透明底，不写任何说明文字，形象占满这块 */
+  #host iframe{width:100%;height:100%;border:0;background:transparent;display:block}
+  #caption{min-height:7vmin;background:#ffffff0a;border:1px solid #ffffff14;border-radius:1.2vmin;
+    padding:1.1vmin;font-size:1.6vmin;line-height:1.6;color:#dbe7ff;opacity:0;transition:.3s}
+  #caption.show{opacity:1}
+  #danmu{flex:0 0 20%;background:#ffffff06;border:1px solid #ffffff10;border-radius:1.2vmin;padding:1.1vmin;
+    overflow:hidden;display:flex;flex-direction:column;gap:.5vmin}
+  .line{font-size:1.4vmin;color:var(--dim);animation:in .3s ease}
+  .line b{color:var(--fg)}
+  .line.ok b{color:var(--ok)}.line.warn b{color:var(--warn)}.line.err b{color:var(--err)}
+  @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  body.nohost aside{display:none}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="brand">AI PAINTER LIVE</span>
+    <span class="pill"><span class="dot" id="dotComfy"></span>ComfyUI</span>
+    <span class="pill"><span class="dot" id="dotDanmu"></span>弹幕</span>
+    <span class="pill">排队 <b id="queue">0</b></span>
+    <span class="pill">免费额度 <b id="freeLeft">—</b></span>
+    <span class="pill" id="modePill">直播</span>
+    <span class="grow"></span>
+    <span class="pill" id="clock"></span>
+  </header>
+  <main>
+    <section id="stage">
+      <img id="canvas" alt="">
+      <div id="scan"></div>
+      <div id="placeholder">弹幕发「<b id="triggerHint">触发词 + 想画的内容</b>」<br>就能点图啦</div>
+      <div id="status">
+        <div id="who">空闲中，等待点单</div>
+        <div id="bar"><i></i></div>
+      </div>
+    </section>
+    <aside>
+      <div id="host"><iframe id="l2d" src="/live2d" allow="autoplay" title="Live2D"></iframe></div>
+      <div id="caption"></div>
+    </aside>
+  </main>
+  <div id="danmu"></div>
+</div>
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get('host') === '0') document.body.classList.add('nohost');
+  if (q.get('bg') === '0') document.body.classList.add('bare');
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('canvas'), placeholder = $('placeholder'), who = $('who'),
+        bar = $('bar').firstChild, queueEl = $('queue'), caption = $('caption');
+
+  function line(html, kind) {
+    const box = $('danmu');
+    const d = document.createElement('div');
+    d.className = 'line ' + (kind || '');
+    d.innerHTML = html;
+    box.appendChild(d);
+    while (box.children.length > 8) box.removeChild(box.firstChild);
+  }
+  function busy(on) { document.body.classList.toggle('busy', !!on); }
+  function show(url) {
+    const img = new Image();
+    img.onload = () => { canvas.src = img.src; canvas.classList.add('in'); placeholder.style.display = 'none'; };
+    img.src = url;
+  }
+  function say(text) {
+    caption.textContent = text;
+    caption.classList.add('show');
+    clearTimeout(say._t);
+    say._t = setTimeout(() => caption.classList.remove('show'), 9000);
+  }
+  function tick() { $('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
+  tick(); setInterval(tick, 1000);
+
+  function applyState(s) {
+    $('freeLeft').textContent = (s.session?.free_left ?? '—') + '/' + (s.session?.free_pool ?? '—');
+    if (s.config?.basic?.trigger) $('triggerHint').textContent = s.config.basic.trigger;
+    $('modePill').textContent = s.session?.running ? '直播中' : '未开播';
+    if (s.config?.review?.full_review) $('modePill').textContent += ' · 审核';
+    $('queue').textContent = (s.review || []).length || 0;
+  }
+  fetch('/api/state').then(r => r.json()).then(applyState).catch(() => {});
+
+  const es = new EventSource('/events');
+  es.onmessage = (e) => {
+    let ev; try { ev = JSON.parse(e.data); } catch { return; }
+    switch (ev.type) {
+      case 'queued': queueEl.textContent = ev.pos || 0; line('<b>' + ev.uname + '</b> 点单：' + ev.subject, 'ok'); break;
+      case 'start': busy(true); who.innerHTML = '正在为 <b>' + ev.uname + '</b> 画：' + ev.subject; bar.style.width = '0%'; break;
+      case 'progress': bar.style.width = Math.floor(ev.value / ev.max * 100) + '%'; break;
+      case 'review':
+        busy(false); bar.style.width = '100%';
+        who.textContent = '画好了，等主人过目～';
+        line('待审核：' + (ev.item?.subject || ''), 'warn');
+        fetch('/api/state').then(r => r.json()).then(applyState);
+        break;
+      case 'rejected':
+        busy(false); bar.style.width = '0%';
+        who.textContent = '这张没通过，抱歉啦';
+        line('未过审：' + (ev.item?.subject || ''), 'err');
+        break;
+      case 'done':
+        busy(false); bar.style.width = '100%';
+        show(ev.url || ('/img/' + ev.date + '/' + ev.file));
+        who.innerHTML = '<b>' + ev.uname + '</b> 的《' + (ev.subject || '') + '》';
+        line('出图完成：' + (ev.subject || ''), 'ok');
+        fetch('/api/state').then(r => r.json()).then(applyState);
+        break;
+      case 'say': say(ev.text); break;
+      case 'gift': line('<b>' + ev.uname + '</b> 送出 ' + ev.gift + '×' + ev.num + '（¥' + ev.yuan + '，额度+' + ev.granted + '）', 'ok'); break;
+      case 'notice': line(ev.text, ev.kind === 'ok' ? 'ok' : 'warn'); break;
+      case 'link': $('dotDanmu').classList.toggle('on', !!ev.connected); break;
+      case 'live': fetch('/api/state').then(r => r.json()).then(applyState); break;
+      case 'error':
+        busy(false); who.textContent = '这张翻车了：' + (ev.message || '');
+        line('出错：' + (ev.message || ''), 'err');
+        break;
+    }
+  };
+  const poll = () => fetch('/api/state').then(r => r.json()).then(s => {
+    $('dotComfy').classList.toggle('on', !!s.comfy?.online);
+    $('dotDanmu').classList.toggle('on', s.danmaku === 'connected');
+  }).catch(() => {});
+  poll(); setInterval(poll, 10000);
+</script>
+</body>
+</html>

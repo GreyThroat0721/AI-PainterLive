@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AI 绘画直播间 · 画面项</title>
+<style>
+  :root{--fg:#e8eefc;--dim:#8ea0c0;--accent:#6ea8ff;--ok:#4ade80;--warn:#fbbf24}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;background:transparent;overflow:hidden;color:var(--fg);
+    font-family:"Microsoft YaHei UI","Segoe UI",system-ui,sans-serif}
+  #box{width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:1.6vmin}
+  /* 图片展示区 */
+  #image{max-width:100%;max-height:100%;object-fit:contain;opacity:0;transform:scale(.985);transition:.45s;
+    filter:drop-shadow(0 1vmin 3vmin #0009)}
+  #image.in{opacity:1;transform:scale(1)}
+  #empty{font-size:2vmin;color:var(--dim);text-align:center;line-height:1.8}
+  /* 进度条 */
+  #progressWrap{width:100%;display:flex;flex-direction:column;gap:1.2vmin}
+  #progText{font-size:2.8vmin;font-weight:600;color:var(--fg);display:flex;justify-content:space-between;
+    text-shadow:0 .4vmin 1.2vmin #000c}
+  #bar{height:2.2vmin;border-radius:99px;background:#ffffff26;overflow:hidden;
+    box-shadow:0 .3vmin 1vmin #000a}
+  #bar>i{display:block;height:100%;width:0;border-radius:99px;
+    background:linear-gradient(90deg,#6ea8ff,#a78bfa,#4ade80);transition:width .2s}
+  /* 状态卡 */
+  .stat{display:flex;gap:3.6vmin;padding:2vmin 3.4vmin;border-radius:1.8vmin;
+    background:#0b0e14f2;border:1px solid #ffffff26;backdrop-filter:blur(6px);font-size:2.6vmin;
+    box-shadow:0 .6vmin 2.4vmin #000a}
+  .stat b{color:var(--accent);font-size:5.2vmin;font-weight:800;line-height:1.1;
+    text-shadow:0 .3vmin 1vmin #000c}
+  .stat .k{color:#9fb0cd;font-size:2.2vmin;letter-spacing:.05em}
+  .stat .cell{display:flex;flex-direction:column;align-items:center;gap:.5vmin;min-width:14vmin}
+  /* 字幕 */
+  /* 平时输出字幕就是这样一块底：固定两行高、无边框、无过渡。
+     没字时只是里面空着，背景大小位置完全一样，方便主人定位。 */
+  #caption{width:88%;min-height:17vmin;padding:1.6vmin 3.2vmin;border-radius:1.8vmin;
+    background:#0b0e14f2;border:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:.6vmin;
+    box-shadow:0 .6vmin 2.4vmin #0008;box-sizing:border-box}
+  #capWho{font-size:2.4vmin;color:#8fb4ff;font-weight:600;letter-spacing:.04em;
+    line-height:1.3;text-shadow:0 .3vmin 1vmin #000c}
+  #capWhat{font-size:4.4vmin;font-weight:700;line-height:1.45;color:#f2f7ff;text-align:center;
+    text-shadow:0 .4vmin 1.4vmin #000d;word-break:break-word}
+  /* 待机：只把字藏掉，背景不变，避免"啪"一下换样式 */
+  #caption.placeholder #capWho,
+  #caption.placeholder #capWhat{opacity:0}
+  /* Live2D：纯透明占位，不画框、不写字（OBS 里直接叠桌宠窗口） */
+  #live2d{width:100%;height:100%;background:transparent}
+</style>
+</head>
+<body>
+<div id="box"></div>
+<script>
+  const item = (location.pathname.split('/').pop() || '').trim();
+  const box = document.getElementById('box');
+  const $ = (id) => document.getElementById(id);
+  let state = {};
+
+  function el(html) { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstChild; }
+
+  async function paint(item) {
+    box.innerHTML = '';
+    if (item === 'image') {
+      box.innerHTML = '<img id="image" alt=""><div id="empty" style="display:none">等待第一张画<br>弹幕发「触发词 + 内容」</div>';
+    } else if (item === 'progress') {
+      box.innerHTML = '<div id="progressWrap"><div id="progText"><span>空闲中</span><span>0%</span></div><div id="bar"><i></i></div></div>';
+    } else if (item === 'stats') {
+      box.innerHTML = '<div class="stat" id="statBox"></div>';
+    } else if (item === 'quota') {
+      box.innerHTML = '<div class="stat"><div class="cell"><span class="k">全场免费额度</span><b id="freeLeft">—</b></div></div>';
+    } else if (item === 'caption') {
+      box.innerHTML = '<div id="caption" class="placeholder"><div id="capWho"></div><div id="capWhat"></div></div>';
+    } else if (item === 'live2d') {
+      box.innerHTML = '<iframe src="/live2d?host=0" style="width:100%;height:100%;border:0;background:transparent"></iframe>';
+    }
+  }
+
+  function showImage(url) {
+    const img = $('image'); if (!img) return;
+    const pre = new Image();
+    pre.onload = () => { img.src = pre.src; img.classList.add('in'); const e = $('empty'); if (e) e.style.display = 'none'; };
+    pre.src = url;
+  }
+
+  function setBar(value, max, title) {
+    const bar = $('bar'); if (!bar) return;
+    const pct = max ? Math.min(100, Math.round(value / max * 100)) : 0;
+    bar.firstChild.style.width = pct + '%';
+    const text = $('progText');
+    if (text) text.innerHTML = '<span>' + (title || '绘画中') + '</span><span>' + pct + '%</span>';
+  }
+
+  function say(text, target, kind) {
+    const cap = $('caption'); if (!cap) return;
+    const who = $('capWho'), what = $('capWhat');
+    if (!who || !what) return;
+    const label = kind === 'gift' ? '感谢' : kind === 'reply' ? '回复' : kind === 'draw' ? '画给' : '对';
+    cap.classList.remove('placeholder');
+    who.textContent = target ? (label + ' @' + target) : '';
+    what.textContent = text;
+    clearTimeout(say._t);
+    // 按字数算停留：长句子读得慢，短句子别硬挂 9 秒
+    const ms = Math.max(6000, Math.min(22000, (text || '').length * 340 + 3000));
+    say._t = setTimeout(() => {
+      cap.classList.add('placeholder');   // 只隐字，不换背景
+      who.textContent = '';
+      what.textContent = '';
+    }, ms);
+  }
+
+  function renderStats(s) {
+    const box = $('statBox'); if (!box) return;
+    const sess = s.session || {};
+    box.innerHTML =
+      '<div class="cell"><span class="k">余额</span><b>' + (s.balance && s.balance.ok ? '¥' + s.balance.total : '—') + '</b></div>' +
+      '<div class="cell"><span class="k">收益</span><b>¥' + (sess.revenue_yuan ?? 0).toFixed(2) + '</b></div>' +
+      '<div class="cell"><span class="k">花费</span><b>¥' + (sess.cost_yuan ?? 0).toFixed(4) + '</b></div>';
+  }
+
+  function renderFree(s) {
+    const free = $('freeLeft');
+    if (free) free.textContent = (s.session?.free_left ?? '—') + ' / ' + (s.session?.free_pool ?? '—');
+  }
+
+  function renderL2d(s) { /* 透明层，不显示任何文字 */ }
+
+  async function boot() {
+    await paint(item);
+    try {
+      const s = await (await fetch('/api/state')).json();
+      state = s;
+      renderStats(s); renderFree(s); renderL2d(s);
+      if (item === 'stats') {
+        const bal = await (await fetch('/api/balance')).json().catch(() => null);
+        if (bal) { s.balance = bal; renderStats(s); }
+      }
+      const last = (s.review || []).slice(-1)[0];
+      if (item === 'image' && last) { /* 待审图不放出 */ }
+    } catch (e) {}
+
+    const es = new EventSource('/events');
+    es.onmessage = (e) => {
+      let ev; try { ev = JSON.parse(e.data); } catch { return; }
+      if (item === 'progress') {
+        if (ev.type === 'start') setBar(0, 100, '正在为 ' + ev.uname + ' 画 ' + ev.subject);
+        else if (ev.type === 'progress') setBar(ev.value, ev.max);
+        else if (ev.type === 'done') setBar(100, 100, '完成');
+        else if (ev.type === 'error') setBar(0, 100, '出错了');
+        else if (ev.type === 'review') setBar(100, 100, '等待审核');
+      } else if (item === 'image') {
+        if (ev.type === 'done') showImage(ev.url || ('/img/' + ev.date + '/' + ev.file));
+      } else if (item === 'caption') {
+        if (ev.type === 'say') say(ev.text, ev.target, ev.kind);
+      } else if (item === 'stats' || item === 'quota') {
+        if (['gift', 'done', 'live'].includes(ev.type)) {
+          fetch('/api/state').then(r => r.json()).then(s => { renderStats(s); renderFree(s); });
+        }
+      }
+    };
+  }
+  boot();
+</script>
+</body>
+</html>

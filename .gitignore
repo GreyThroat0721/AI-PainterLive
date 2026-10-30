@@ -1,0 +1,28 @@
+# 运行时数据（不要提交，含密钥与观众信息）
+data/
+images/
+logs/
+out/
+temp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 打包产物（exe 走 Release 附件，不进仓库）
+build/
+dist/
+PainterLive/
+_release/
+
+# 独立窗口 profile
+edge-profile/
+launcher.log
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

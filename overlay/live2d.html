@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Live2D 人物</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden}
+  #stage{width:100%;height:100%;display:flex;align-items:flex-end;justify-content:center}
+  #hint{position:fixed;left:12px;bottom:10px;color:#8ea0c0;font:14px "Microsoft YaHei UI",sans-serif;
+    background:#0b0e14ee;padding:8px 12px;border-radius:8px;font-size:15px;z-index:999;
+   white-space:pre-wrap;line-height:1.5;color:#7ef2a6}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hint">Live2D 加载中…（贴图 9.4MB，第一次要等几秒）</div>
+<script src="/web/lib/live2dcubismcore.min.js"></script>
+<script src="/web/lib/pixi.min.js"></script>
+<script src="/web/lib/cubism4.min.js"></script>
+<script>
+/* 情绪表：f=频率 a=幅度，Y=静态偏移。改这里的数值就等于改她的"肢体语言"。 */
+const EMOTIONS = {
+  neutral:  {tailF:1.2, tailA:0.35, headF:0.80, headA:0.06, headY: 0.00, bodyF:0.70, bodyA:0.02, ahogeF:1.2, ahogeA:0.25, exp:null},
+  happy:    {tailF:4.5, tailA:0.90, headF:2.20, headA:0.16, headY: 0.05, bodyF:2.60, bodyA:0.06, ahogeF:5.0, ahogeA:0.60, exp:'happy_eyes'},
+  sad:      {tailF:0.6, tailA:0.12, headF:0.50, headA:0.03, headY:-0.28, bodyF:0.40, bodyA:0.01, ahogeF:0.5, ahogeA:0.08, exp:'worried'},
+  angry:    {tailF:5.0, tailA:0.70, headF:9.00, headA:0.10, headY:-0.10, bodyF:8.00, bodyA:0.05, ahogeF:6.0, ahogeA:0.50, exp:'teeth'},
+  shy:      {tailF:1.5, tailA:0.30, headF:0.60, headA:0.05, headY:-0.15, bodyF:0.60, bodyA:0.02, ahogeF:1.0, ahogeA:0.15, exp:'shy'},
+  surprised:{tailF:3.0, tailA:0.50, headF:1.00, headA:0.02, headY: 0.15, bodyF:1.00, bodyA:0.03, ahogeF:3.0, ahogeA:0.80, exp:'oo'},
+  proud:    {tailF:1.6, tailA:0.40, headF:0.90, headA:0.12, headY: 0.18, bodyF:0.80, bodyA:0.03, ahogeF:1.8, ahogeA:0.30, exp:'chestnut'}
+};
+const EXPRESSION_ALIAS = {
+  '脸红':'shy','脸黑':'dark','龇牙':'teeth','流口水':'drool','担心':'worried',
+  '栗子':'chestnut','生气':'teeth','开心':'happy_eyes','笑':'happy_eyes','害羞':'shy',
+  '哭':'worried','惊讶':'oo','无语':'xx','x_x':'xx'
+};
+
+const params = new URLSearchParams(location.search);
+const hostHide = params.get('host') === '0';
+const mood = { name: params.get('emo') || 'neutral', exp: null, talking: 0, holdExp: null };
+let model = null, core = null, app = null, currentExp = undefined;
+
+function setParam(id, v) {
+  try { core.setParameterValueById(id, v); } catch (e) {}
+}
+
+function applyExpression(name) {
+  if (!model || name === currentExp) return;
+  currentExp = name;
+  try {
+    if (!name) {
+      model.internalModel.motionManager.expressionManager?.resetExpression();
+    } else {
+      model.expression(name);
+    }
+  } catch (e) { console.warn('expression', name, e); }
+}
+
+function setEmotion(name, exp) {
+  if (EMOTIONS[name]) mood.name = name;
+  if (exp) {
+    const key = EXPRESSION_ALIAS[exp] || exp;
+    mood.holdExp = key;
+    applyExpression(key);
+  }
+}
+
+async function boot() {
+  const hint = document.getElementById('hint');
+  hint.style.display = 'block';
+  try {
+    if (!window.PIXI) throw new Error('PIXI 没加载（/web/lib/pixi.min.js）');
+    if (!PIXI.live2d || !PIXI.live2d.Live2DModel) {
+      throw new Error('Live2D 渲染库没挂上（/web/lib/cubism4.min.js），检查脚本加载顺序');
+    }
+    // 绿幕模式：OBS 的 CEF 不认 alpha 透明，但认颜色 —— 涂纯绿，用 OBS 色键抠掉
+    const bgColor = params.get('bg');
+    if (bgColor) {
+      const hex = bgColor.startsWith('#') ? bgColor : '#' + bgColor;
+      document.documentElement.style.background = hex;
+      document.body.style.background = hex;
+      document.getElementById('stage').style.background = hex;
+    }
+    // OBS 的浏览器源对 WebGL / 高分屏不太友好：?low=1 降分辨率关抗锯齿，?canvas=1 强制软件渲染
+    const low = params.get('low') === '1';
+    // OBS / 直播姬 里 window 尺寸常是 0 或还没算出来，resizeTo:window 会得到 0×0 → 整屏透明
+    const W = Math.max(window.innerWidth || 0, 480);
+    const H = Math.max(window.innerHeight || 0, 360);
+    const opts = {
+      width: W, height: H, backgroundAlpha: 0, antialias: !low,
+      resolution: low ? 1 : Math.min(window.devicePixelRatio || 1, 2),
+      autoDensity: true, forceCanvas: params.get('canvas') === '1'
+    };
+    try {
+      app = new PIXI.Application(opts);
+    } catch (e1) {
+      opts.forceCanvas = true;
+      app = new PIXI.Application(opts);
+    }
+    document.getElementById('stage').appendChild(app.view);
+
+    // OBS / 直播姬会回收 GPU context（切场景、最小化、驱动空闲），pixi 不会自己恢复 → 白屏。
+    // 必须监听并整页重建。
+    app.view.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      console.warn('[L2D] WebGL context lost，2 秒后重建');
+      setTimeout(hardReload, 2000);
+    }, false);
+    app.view.addEventListener('webglcontextrestored', () => hardReload(), false);
+
+    // 分步进度：OBS 里卡住时能直接看出卡在第几步，而不是无限"加载中"
+    const step = (s) => {
+      hint.style.display = 'block';
+      hint.textContent = s;
+      console.log('[L2D] ' + s);
+    };
+    step('第1步：引擎已就绪，读取配置…');
+
+    // 配置由服务端直接注入：CEF 里 fetch 有时永远不返回，卡在这一步就是死锁
+    const l2d = window.__L2D_CONF || { enabled: true, model: '', file: '' };
+    if (!l2d.enabled) { hint.textContent = 'Live2D 未启用（基础设置里打开）'; }
+    const modelName = l2d.model || '';
+
+    const withTimeout = (p, ms, label) => Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(label + ' 超时 ' + (ms / 1000) + ' 秒')), ms))
+    ]);
+    const url = '/model/' + encodeURIComponent(modelName) + '/' + encodeURIComponent(l2d.file || 'model.model3.json');
+
+    step('第2步：下载模型（moc3 + 贴图）…');
+    // CEF 里 WebGL 创建失败时 cubism 会静默挂死，必须自己超时
+    model = await withTimeout(
+      PIXI.live2d.Live2DModel.from(url, { autoInteract: false }),
+      25000,
+      '模型加载'
+    );
+    step('第3步：模型已载入，初始化 WebGL…');
+    app.stage.addChild(model);
+    core = model.internalModel.coreModel;
+
+    const fit = () => {
+      const w = app.renderer.width / app.renderer.resolution;
+      const h = app.renderer.height / app.renderer.resolution;
+      const s = Math.min(w / model.internalModel.width, h / model.internalModel.height) * 1.0;
+      model.scale.set(s);
+      model.x = w / 2 - (model.internalModel.width * s) / 2;
+      model.y = h - model.internalModel.height * s;
+    };
+    fit();
+    window.__fit = fit;
+    window.addEventListener('resize', () => { app.renderer.resize(innerWidth, innerHeight); fit(); });
+    window.__l2dReady = true;   // 健康检查靠它判断是否真的渲染起来了
+    step('第4步：渲染完成');
+    showDiag();
+
+    // 低优先级：模型自己 update 完之后再覆盖参数，保证不被 physics 顶掉
+    app.ticker.add(override, null, PIXI.UPDATE_PRIORITY.LOW);
+  } catch (e) {
+    hint.style.display = 'block';
+    hint.textContent = 'Live2D 加载失败：' + (e && e.message ? e.message : e);
+    console.error(e);
+  }
+}
+
+function override() {
+  if (!core) return;
+  const t = performance.now() / 1000;
+  const E = EMOTIONS[mood.name] || EMOTIONS.neutral;
+
+  setParam('ParamBreath', Math.sin(t * 1.6) * 0.5 + 0.5);
+
+  // 呆毛：随情绪晃
+  for (let i = 0; i < 4; i++) {
+    setParam('ParamHF_' + (23 + i), Math.sin(t * E.ahogeF + i * 0.6) * E.ahogeA * (1 - i * 0.15));
+  }
+  // 鱼鳍耳朵：一开一合
+  setParam('ParamTWL25', 0.35 + Math.sin(t * E.bodyF * 1.5) * 0.25);
+  setParam('ParamTWL30', 0.35 + Math.sin(t * E.bodyF * 1.5 + 1.2) * 0.25);
+  for (let i = 0; i < 4; i++) {
+    const w = Math.sin(t * E.ahogeF * 0.8 + i * 0.5) * 0.2;
+    setParam('ParamTWL' + (21 + i), w);
+    setParam('ParamTWL' + (26 + i), -w);
+  }
+  // 大鲸鱼尾巴：5 段链式摆动，高兴拍地、难过下垂
+  for (let i = 2; i <= 6; i++) {
+    setParam('Param_Angle_Rotation_' + i + '_ArtMesh367',
+      Math.sin(t * E.tailF - (i - 2) * 0.55) * E.tailA * ((i - 1) / 6));
+  }
+  // 头部与身体
+  setParam('ParamAngleZ', Math.sin(t * E.headF) * E.headA);
+  setParam('ParamAngleY', E.headY + Math.sin(t * 0.9) * 0.03);
+  setParam('ParamAngleX', Math.sin(t * E.headF * 0.6 + 1) * E.headA * 0.5);
+  setParam('ParamBodyAngleZ', Math.sin(t * E.bodyF) * E.bodyA);
+  setParam('ParamBodyAngleX', Math.sin(t * E.bodyF * 0.7) * E.bodyA * 0.5);
+
+  // 说话时嘴动（口型同步只做表情层面的开合）
+  if (mood.talking > 0) {
+    setParam('ParamMouthOpenY', (Math.sin(t * 24) * 0.5 + 0.5) * 0.85);
+    setParam('ParamMouthForm', Math.sin(t * 12) * 0.2);
+  }
+
+  // 情绪自带表情；被 [exp:] 临时表情覆盖时优先
+  if (!mood.holdExp) applyExpression(E.exp);
+}
+
+/* 诊断：透明时能一眼看出是画布 0×0、贴图没进、还是模型在画面外 */
+function showDiag() {
+  try {
+    const c = app.view;
+    const d = [
+      'canvas ' + c.width + 'x' + c.height + '  css ' + c.clientWidth + 'x' + c.clientHeight,
+      'window ' + window.innerWidth + 'x' + window.innerHeight + '  dpr ' + app.renderer.resolution,
+      'model ' + model.internalModel.width.toFixed(0) + 'x' + model.internalModel.height.toFixed(0),
+      'scale ' + model.scale.x.toFixed(4) + '  pos ' + Math.round(model.x) + ',' + Math.round(model.y),
+      'tex ' + (model.textures ? model.textures.length : 0) + '  visible ' + model.visible + '  alpha ' + model.alpha
+    ].join('\n');
+    hint.style.display = 'block';
+    hint.style.fontSize = '14px';
+    hint.textContent = d;
+    console.log('[L2D] ' + d.replace(/\n/g, ' | '));
+    setTimeout(() => { if (window.__l2dReady) hint.style.display = 'none'; }, 20000);
+  } catch (e) {
+    hint.style.display = 'block';
+    hint.textContent = '诊断出错: ' + (e && e.message);
+  }
+}
+
+/* 外部入口：AI / 面板 / OBS 都能调 */
+window.L2D = {
+  emotion(name, exp) { setEmotion(name, exp); },
+  say(text, ms) { mood.talking = Date.now() + (ms || Math.max(1500, (text || '').length * 180)); },
+  reset() { mood.holdExp = null; setEmotion('neutral'); }
+};
+setInterval(() => { if (mood.talking && Date.now() > mood.talking) { mood.talking = 0; setParam('ParamMouthOpenY', 0); } }, 300);
+
+/* 自愈：60 秒内最多重建 3 次，防止死循环刷屏 */
+function hardReload() {
+  const now = Date.now();
+  let hist = [];
+  try { hist = JSON.parse(sessionStorage.getItem('l2d_reload') || '[]'); } catch (e) { hist = []; }
+  hist = hist.filter(t => now - t < 60000);
+  if (hist.length >= 3) { console.warn('[L2D] 重建过于频繁，暂停'); return; }
+  hist.push(now);
+  try { sessionStorage.setItem('l2d_reload', JSON.stringify(hist)); } catch (e) {}
+  location.reload();
+}
+/* 源尺寸被 OBS 改大改小时自动跟随（resizeTo 已经不用了） */
+setInterval(() => {
+  if (!app || !app.renderer || !model) return;
+  const w = Math.max(window.innerWidth || 0, 480);
+  const h = Math.max(window.innerHeight || 0, 360);
+  const cw = app.renderer.width / app.renderer.resolution;
+  const ch = app.renderer.height / app.renderer.resolution;
+  if (Math.abs(cw - w) > 2 || Math.abs(ch - h) > 2) {
+    app.renderer.resize(w, h);
+    if (window.__fit) window.__fit();
+  }
+}, 1000);
+const __t0 = Date.now();
+setInterval(() => {
+  const canvas = app && app.view;
+  const broken = !window.__l2dReady || !canvas || canvas.width === 0 || canvas.height === 0;
+  if (!broken) return;
+  if (Date.now() - __t0 < 15000) return;   // 刚开始加载，给点时间
+  console.warn('[L2D] 渲染没起来，重建页面');
+  hardReload();
+}, 5000);
+
+/* 直播事件流：AI 说什么，她就怎么动 */
+try {
+  const es = new EventSource('/events');
+  es.onmessage = (e) => {
+    let ev; try { ev = JSON.parse(e.data); } catch { return; }
+    if (ev.type === 'emotion') setEmotion(ev.name, ev.exp);
+    else if (ev.type === 'say') { setEmotion(ev.emotion || mood.name, ev.exp); mood.talking = Date.now() + Math.max(1800, (ev.text || '').length * 200); }
+  };
+} catch (e) {}
+
+boot();
+</script>
+</body>
+</html>

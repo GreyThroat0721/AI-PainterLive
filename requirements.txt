@@ -1,0 +1,9 @@
+# 运行必需
+aiohttp>=3.9
+brotli>=1.1          # B站弹幕 ver=3 压缩包必须用 brotli 解，缺它会"连上了但收不到"
+
+# 可选：原生窗口（没有就用 Edge --app 打开，一样能全屏）
+# pywebview>=5.0
+
+# 仅打包 exe 需要
+# pyinstaller>=6.0
